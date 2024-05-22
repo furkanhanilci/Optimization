@@ -2099,7 +2099,7 @@ for benchmark_name in benchmark_names:
     plt.tight_layout()
     plt.show()
 """
-
+"""
 # 12. Test Functions
 
 import numpy as np
@@ -2470,4 +2470,701 @@ for benchmark_name in benchmark_names:
     plt.grid(True)
 
     plt.tight_layout()
+    plt.show()
+"""
+"""
+# 13. Table of Results
+
+import numpy as np
+import matplotlib.pyplot as plt
+import control as ctrl
+from deap import base, creator, tools, algorithms
+from pyswarm import pso
+import time
+
+# Initialize DEAP for use with Genetic Algorithms
+creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+creator.create("Individual", list, fitness=creator.FitnessMin)
+toolbox = base.Toolbox()
+
+# Benchmark Functions
+def sphere_function(x):
+    x = np.array(x)
+    return np.sum(x ** 2)
+
+def ackley_function(x):
+    x = np.array(x)
+    return -20 * np.exp(-0.2 * np.sqrt(0.5 * np.sum(x ** 2))) - np.exp(0.5 * np.sum(np.cos(2 * np.pi * x))) + 20 + np.e
+
+def rastrigin_function(x):
+    x = np.array(x)
+    return 10 * len(x) + np.sum(x ** 2 - 10 * np.cos(2 * np.pi * x))
+
+def rosenbrock_function(x):
+    x = np.array(x)
+    return np.sum(100.0 * (x[1:] - x[:-1]**2.0)**2.0 + (x[:-1] - 1)**2.0)
+
+def schwefel_function(x):
+    x = np.array(x)
+    return 418.9829 * len(x) - np.sum(x * np.sin(np.sqrt(np.abs(x))))
+
+def griewank_function(x):
+    x = np.array(x)
+    return 1 + (1 / 4000) * np.sum(x ** 2) - np.prod(np.cos(x / np.sqrt(np.arange(1, len(x) + 1))))
+
+# Objective function to minimize the integrated absolute error of the step response
+def objective_function(params, benchmark_func):
+    Ka_pida, Kp_pida, Ki_pida, Kd_pida, alpha, beta = params
+    pida_numerator = [Ka_pida, Kd_pida, Kp_pida, Ki_pida]
+    pida_denominator = [1, alpha, beta, 0]
+    PIDA = ctrl.TransferFunction(pida_numerator, pida_denominator)
+    Amplifier = ctrl.TransferFunction([10], [0.1, 1])
+    Exciter = ctrl.TransferFunction([1], [0.4, 1])
+    Generator = ctrl.TransferFunction([1], [1, 1])
+    Sensor = ctrl.TransferFunction([1], [0.01, 1])
+    OpenLoop = PIDA * Amplifier * Exciter * Generator
+    ClosedLoop = ctrl.feedback(OpenLoop, Sensor)
+    time = np.linspace(0, 10, 1000)
+    time, response = ctrl.step_response(ClosedLoop, T=time)
+    error = np.abs(1 - response)
+    control_error = np.sum(error)
+    benchmark_error = benchmark_func(params)
+    return (control_error + benchmark_error,)
+
+# Bounds for the parameters: [Ka_pida, Kp_pida, Ki_pida, Kd_pida, alpha, beta]
+bounds = [(0, 2), (0, 2), (0, 2), (0, 2), (0, 2), (0, 2)]
+
+# Optimization Algorithms Definitions
+def pso_algorithm(obj_function, bounds, swarmsize=50, maxiter=50):
+    lb, ub = zip(*bounds)
+    lb, ub = np.array(lb), np.array(ub)
+    def obj_wrapper(x):
+        return obj_function(x)[0]  # PSO expects a single value, not a tuple
+    start_time = time.time()
+    best_pos, best_score = pso(obj_wrapper, lb, ub, swarmsize=swarmsize, maxiter=maxiter)
+    run_time = time.time() - start_time
+    return best_pos, best_score, run_time
+
+def gwo_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    alpha_pos = np.zeros(dim)
+    alpha_score = float('inf')
+    beta_pos = np.zeros(dim)
+    beta_score = float('inf')
+    delta_pos = np.zeros(dim)
+    delta_score = float('inf')
+
+    positions = np.random.uniform(low=[b[0] for b in bounds], high=[b[1] for b in bounds], size=(num_agents, dim))
+    convergence_curve = []
+
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < alpha_score:
+                alpha_score = fitness
+                alpha_pos = positions[i, :].copy()
+            elif fitness < beta_score:
+                beta_score = fitness
+                beta_pos = positions[i, :].copy()
+            elif fitness < delta_score:
+                delta_score = fitness
+                delta_pos = positions[i, :].copy()
+
+        a = 2 - iter * (2 / max_iter)
+
+        for i in range(num_agents):
+            for j in range(dim):
+                r1, r2 = np.random.random(), np.random.random()
+                A1 = 2 * a * r1 - a
+                C1 = 2 * r2
+                D_alpha = abs(C1 * alpha_pos[j] - positions[i, j])
+                X1 = alpha_pos[j] - A1 * D_alpha
+
+                r1, r2 = np.random.random(), np.random.random()
+                A2 = 2 * a * r1 - a
+                C2 = 2 * r2
+                D_beta = abs(C2 * beta_pos[j] - positions[i, j])
+                X2 = beta_pos[j] - A2 * D_beta
+
+                r1, r2 = np.random.random(), np.random.random()
+                A3 = 2 * a * r1 - a
+                C3 = 2 * r2
+                D_delta = abs(C3 * delta_pos[j] - positions[i, j])
+                X3 = delta_pos[j] - A3 * D_delta
+
+                positions[i, j] = (X1 + X2 + X3) / 3
+
+        convergence_curve.append(alpha_score)
+
+    run_time = time.time() - start_time
+    return alpha_pos, alpha_score, run_time
+
+def ga_algorithm(obj_function, bounds, population_size=50, generations=50):
+    dim = len(bounds)
+    toolbox.register("attr_float", np.random.uniform, bounds[0][0], bounds[0][1])
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_float, n=dim)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    toolbox.register("evaluate", obj_function)
+    toolbox.register("mate", tools.cxBlend, alpha=0.5)
+    toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=0.1, indpb=0.2)
+    toolbox.register("select", tools.selTournament, tournsize=3)
+
+    population = toolbox.population(n=population_size)
+    logbook = tools.Logbook()
+    stats = tools.Statistics(lambda ind: ind.fitness.values)
+    stats.register("avg", np.mean)
+    stats.register("std", np.std)
+    stats.register("min", np.min)
+    stats.register("max", np.max)
+
+    start_time = time.time()
+    result, logbook = algorithms.eaSimple(population, toolbox, cxpb=0.5, mutpb=0.2, ngen=generations, stats=stats, verbose=False)
+    run_time = time.time() - start_time
+
+    best_individual = tools.selBest(result, 1)[0]
+    convergence_curve = [entry['min'] for entry in logbook]
+
+    return best_individual, obj_function(best_individual)[0], run_time
+
+def woa_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    positions = np.random.uniform(low=[b[0] for b in bounds], high=[b[1] for b in bounds], size=(num_agents, dim))
+    leader_pos = np.zeros(dim)
+    leader_score = float('inf')
+    convergence_curve = []
+
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < leader_score:
+                leader_score = fitness
+                leader_pos = positions[i, :].copy()
+
+        a = 2 - iter * (2 / max_iter)
+        for i in range(num_agents):
+            p = np.random.rand()
+            r1, r2 = np.random.rand(), np.random.rand()
+            A = 2 * a * r1 - a
+            C = 2 * r2
+            b = 1
+            l = np.random.uniform(-1, 1)
+
+            if p < 0.5:
+                if abs(A) < 1:
+                    D = abs(C * leader_pos - positions[i, :])
+                    positions[i, :] = leader_pos - A * D
+                else:
+                    rand_index = np.random.randint(0, num_agents)
+                    rand_leader_pos = positions[rand_index]
+                    D = abs(C * rand_leader_pos - positions[i, :])
+                    positions[i, :] = rand_leader_pos - A * D
+            else:
+                D = abs(leader_pos - positions[i, :])
+                positions[i, :] = D * np.exp(b * l) * np.cos(2 * np.pi * l) + leader_pos
+
+        convergence_curve.append(leader_score)
+
+    run_time = time.time() - start_time
+    return leader_pos, leader_score, run_time
+
+def hho_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    lb, ub = zip(*bounds)
+    lb, ub = np.array(lb), np.array(ub)
+    positions = np.random.uniform(low=lb, high=ub, size=(num_agents, dim))
+    leader_pos = np.zeros(dim)
+    leader_score = float('inf')
+    convergence_curve = []
+
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < leader_score:
+                leader_score = fitness
+                leader_pos = positions[i, :].copy()
+
+        E1 = 2 * (1 - iter / max_iter)
+        for i in range(num_agents):
+            E0 = 2 * np.random.random() - 1
+            Escaping_Energy = E1 * E0
+
+            if abs(Escaping_Energy) >= 1:
+                q = np.random.random()
+                if q >= 0.5:
+                    rand_index = np.random.randint(0, num_agents)
+                    rand_pos = positions[rand_index]
+                    positions[i] = rand_pos - np.random.random() * abs(rand_pos - 2 * np.random.random() * positions[i])
+                else:
+                    positions[i] = (leader_pos - positions.mean(0)) - np.random.random() * (
+                        (ub - lb) * np.random.random() + lb)
+
+            else:
+                r = np.random.random()
+                if r >= 0.5 and abs(Escaping_Energy) < 0.5:
+                    positions[i] = leader_pos - Escaping_Energy * abs(leader_pos - positions[i])
+                if r >= 0.5 and abs(Escaping_Energy) >= 0.5:
+                    positions[i] = positions.mean(0) - Escaping_Energy * abs(positions.mean(0) - positions[i])
+                if r < 0.5 and abs(Escaping_Energy) >= 0.5:
+                    positions[i] = leader_pos - Escaping_Energy * abs(
+                        leader_pos - positions[i]) - np.random.random() * (
+                        (ub - lb) * np.random.random() + lb)
+                if r < 0.5 and abs(Escaping_Energy) < 0.5:
+                    positions[i] = leader_pos - Escaping_Energy * abs(leader_pos - positions[i])
+
+        convergence_curve.append(leader_score)
+
+    run_time = time.time() - start_time
+    return leader_pos, leader_score, run_time
+
+def geo_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    lb, ub = zip(*bounds)
+    lb, ub = np.array(lb), np.array(ub)
+    leader_pos = np.zeros(dim)
+    leader_score = float('inf')
+
+    positions = np.random.uniform(low=lb, high=ub, size=(num_agents, dim))
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < leader_score:
+                leader_score = fitness
+                leader_pos = positions[i, :].copy()
+
+        F = 2 * np.exp(-(4 * iter / max_iter) ** 2) * np.sin((2 * np.pi * iter) / max_iter)
+        for i in range(num_agents):
+            r1 = np.random.random()
+            P = np.random.random()
+            G = (r1 * leader_pos - positions[i])
+            if P < 0.5:
+                positions[i] = leader_pos - G * F
+            else:
+                positions[i] = leader_pos + G * F
+
+    run_time = time.time() - start_time
+    return leader_pos, leader_score, run_time
+
+# Benchmark names and functions
+benchmark_names = ["Sphere", "Ackley", "Rastrigin", "Rosenbrock", "Schwefel", "Griewank"]
+benchmark_functions = [sphere_function, ackley_function, rastrigin_function, rosenbrock_function, schwefel_function, griewank_function]
+optimization_names = ["GA", "GWO", "WOA", "HHO", "GEO"]
+optimization_algorithms = [ga_algorithm, gwo_algorithm, woa_algorithm, hho_algorithm, geo_algorithm]
+
+# Main optimization loop and data collection
+results = {benchmark_name: {opt_name: {} for opt_name in optimization_names} for benchmark_name in benchmark_names}
+
+num_runs = 5  # Number of runs to calculate mean and std
+
+for benchmark_name, benchmark_func in zip(benchmark_names, benchmark_functions):
+    for opt_name, opt_func in zip(optimization_names, optimization_algorithms):
+        best_scores = []
+        run_times = []
+        for _ in range(num_runs):
+            best_params, best_score, run_time = opt_func(lambda params: objective_function(params, benchmark_func), bounds)
+            best_scores.append(best_score)
+            run_times.append(run_time)
+        results[benchmark_name][opt_name] = {
+            'Best': np.min(best_scores),
+            'Mean': np.mean(best_scores),
+            'Std': np.std(best_scores),
+            'Run Time': np.mean(run_times)
+        }
+        print(f"Best params for {benchmark_name} using {opt_name}: {best_params}, Best Score: {np.min(best_scores)}, Mean Score: {np.mean(best_scores)}, Std: {np.std(best_scores)}, Run Time: {np.mean(run_times)}")
+
+# Print tables
+for benchmark_name in benchmark_names:
+    print(f"\nTable for {benchmark_name} Function")
+    print("Algorithm\tBest\tMean\tStd\tRun Time (Sec)")
+    for opt_name in optimization_names:
+        result = results[benchmark_name][opt_name]
+        print(f"{opt_name}\t{result['Best']:.6f}\t{result['Mean']:.6f}\t{result['Std']:.6f}\t{result['Run Time']:.6f}")
+
+# Optionally, plot results here
+for benchmark_name in benchmark_names:
+    plt.figure()
+    plt.title(f'Response curves for {benchmark_name}')
+    for opt_name in optimization_names:
+        best_params = results[benchmark_name][opt_name]['Best']
+        PIDA = ctrl.TransferFunction([best_params[0], best_params[1], best_params[2], best_params[3]], [1, best_params[4], best_params[5], 0])
+        Amplifier = ctrl.TransferFunction([10], [0.1, 1])
+        Exciter = ctrl.TransferFunction([1], [0.4, 1])
+        Generator = ctrl.TransferFunction([1], [1, 1])
+        Sensor = ctrl.TransferFunction([1], [0.01, 1])
+        OpenLoop = PIDA * Amplifier * Exciter * Generator
+        ClosedLoop = ctrl.feedback(OpenLoop, Sensor)
+        time = np.linspace(0, 10, 1000)
+        _, response = ctrl.step_response(ClosedLoop, T=time)
+        plt.plot(time, response, label=f"{opt_name}")
+    plt.xlabel('Time (s)')
+    plt.ylabel('Response')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+"""
+
+# 14. Table Word
+
+import numpy as np
+import matplotlib.pyplot as plt
+import control as ctrl
+from deap import base, creator, tools, algorithms
+from pyswarm import pso
+import time
+from docx import Document
+from docx.shared import Pt
+
+# Initialize DEAP for use with Genetic Algorithms
+creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+creator.create("Individual", list, fitness=creator.FitnessMin)
+toolbox = base.Toolbox()
+
+# Benchmark Functions
+def sphere_function(x):
+    x = np.array(x)
+    return np.sum(x ** 2)
+
+def ackley_function(x):
+    x = np.array(x)
+    return -20 * np.exp(-0.2 * np.sqrt(0.5 * np.sum(x ** 2))) - np.exp(0.5 * np.sum(np.cos(2 * np.pi * x))) + 20 + np.e
+
+def rastrigin_function(x):
+    x = np.array(x)
+    return 10 * len(x) + np.sum(x ** 2 - 10 * np.cos(2 * np.pi * x))
+
+def rosenbrock_function(x):
+    x = np.array(x)
+    return np.sum(100.0 * (x[1:] - x[:-1]**2.0)**2.0 + (x[:-1] - 1)**2.0)
+
+def schwefel_function(x):
+    x = np.array(x)
+    return 418.9829 * len(x) - np.sum(x * np.sin(np.sqrt(np.abs(x))))
+
+def griewank_function(x):
+    x = np.array(x)
+    return 1 + (1 / 4000) * np.sum(x ** 2) - np.prod(np.cos(x / np.sqrt(np.arange(1, len(x) + 1))))
+
+# Objective function to minimize the integrated absolute error of the step response
+def objective_function(params, benchmark_func):
+    Ka_pida, Kp_pida, Ki_pida, Kd_pida, alpha, beta = params
+    pida_numerator = [Ka_pida, Kd_pida, Kp_pida, Ki_pida]
+    pida_denominator = [1, alpha, beta, 0]
+    PIDA = ctrl.TransferFunction(pida_numerator, pida_denominator)
+    Amplifier = ctrl.TransferFunction([10], [0.1, 1])
+    Exciter = ctrl.TransferFunction([1], [0.4, 1])
+    Generator = ctrl.TransferFunction([1], [1, 1])
+    Sensor = ctrl.TransferFunction([1], [0.01, 1])
+    OpenLoop = PIDA * Amplifier * Exciter * Generator
+    ClosedLoop = ctrl.feedback(OpenLoop, Sensor)
+    time = np.linspace(0, 10, 1000)
+    time, response = ctrl.step_response(ClosedLoop, T=time)
+    error = np.abs(1 - response)
+    control_error = np.sum(error)
+    benchmark_error = benchmark_func(params)
+    return (control_error + benchmark_error,)
+
+# Bounds for the parameters: [Ka_pida, Kp_pida, Ki_pida, Kd_pida, alpha, beta]
+bounds = [(0, 2), (0, 2), (0, 2), (0, 2), (0, 2), (0, 2)]
+
+# Optimization Algorithms Definitions
+def pso_algorithm(obj_function, bounds, swarmsize=50, maxiter=50):
+    lb, ub = zip(*bounds)
+    lb, ub = np.array(lb), np.array(ub)
+    def obj_wrapper(x):
+        return obj_function(x)[0]  # PSO expects a single value, not a tuple
+    start_time = time.time()
+    best_pos, best_score = pso(obj_wrapper, lb, ub, swarmsize=swarmsize, maxiter=maxiter)
+    run_time = time.time() - start_time
+    return best_pos, best_score, run_time
+
+def gwo_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    alpha_pos = np.zeros(dim)
+    alpha_score = float('inf')
+    beta_pos = np.zeros(dim)
+    beta_score = float('inf')
+    delta_pos = np.zeros(dim)
+    delta_score = float('inf')
+
+    positions = np.random.uniform(low=[b[0] for b in bounds], high=[b[1] for b in bounds], size=(num_agents, dim))
+    convergence_curve = []
+
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < alpha_score:
+                alpha_score = fitness
+                alpha_pos = positions[i, :].copy()
+            elif fitness < beta_score:
+                beta_score = fitness
+                beta_pos = positions[i, :].copy()
+            elif fitness < delta_score:
+                delta_score = fitness
+                delta_pos = positions[i, :].copy()
+
+        a = 2 - iter * (2 / max_iter)
+
+        for i in range(num_agents):
+            for j in range(dim):
+                r1, r2 = np.random.random(), np.random.random()
+                A1 = 2 * a * r1 - a
+                C1 = 2 * r2
+                D_alpha = abs(C1 * alpha_pos[j] - positions[i, j])
+                X1 = alpha_pos[j] - A1 * D_alpha
+
+                r1, r2 = np.random.random(), np.random.random()
+                A2 = 2 * a * r1 - a
+                C2 = 2 * r2
+                D_beta = abs(C2 * beta_pos[j] - positions[i, j])
+                X2 = beta_pos[j] - A2 * D_beta
+
+                r1, r2 = np.random.random(), np.random.random()
+                A3 = 2 * a * r1 - a
+                C3 = 2 * r2
+                D_delta = abs(C3 * delta_pos[j] - positions[i, j])
+                X3 = delta_pos[j] - A3 * D_delta
+
+                positions[i, j] = (X1 + X2 + X3) / 3
+
+        convergence_curve.append(alpha_score)
+
+    run_time = time.time() - start_time
+    return alpha_pos, alpha_score, run_time
+
+def ga_algorithm(obj_function, bounds, population_size=50, generations=50):
+    dim = len(bounds)
+    toolbox.register("attr_float", np.random.uniform, bounds[0][0], bounds[0][1])
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_float, n=dim)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    toolbox.register("evaluate", obj_function)
+    toolbox.register("mate", tools.cxBlend, alpha=0.5)
+    toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=0.1, indpb=0.2)
+    toolbox.register("select", tools.selTournament, tournsize=3)
+
+    population = toolbox.population(n=population_size)
+    logbook = tools.Logbook()
+    stats = tools.Statistics(lambda ind: ind.fitness.values)
+    stats.register("avg", np.mean)
+    stats.register("std", np.std)
+    stats.register("min", np.min)
+    stats.register("max", np.max)
+
+    start_time = time.time()
+    result, logbook = algorithms.eaSimple(population, toolbox, cxpb=0.5, mutpb=0.2, ngen=generations, stats=stats, verbose=False)
+    run_time = time.time() - start_time
+
+    best_individual = tools.selBest(result, 1)[0]
+    convergence_curve = [entry['min'] for entry in logbook]
+
+    return best_individual, obj_function(best_individual)[0], run_time
+
+def woa_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    positions = np.random.uniform(low=[b[0] for b in bounds], high=[b[1] for b in bounds], size=(num_agents, dim))
+    leader_pos = np.zeros(dim)
+    leader_score = float('inf')
+    convergence_curve = []
+
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < leader_score:
+                leader_score = fitness
+                leader_pos = positions[i, :].copy()
+
+        a = 2 - iter * (2 / max_iter)
+        for i in range(num_agents):
+            p = np.random.rand()
+            r1, r2 = np.random.rand(), np.random.rand()
+            A = 2 * a * r1 - a
+            C = 2 * r2
+            b = 1
+            l = np.random.uniform(-1, 1)
+
+            if p < 0.5:
+                if abs(A) < 1:
+                    D = abs(C * leader_pos - positions[i, :])
+                    positions[i, :] = leader_pos - A * D
+                else:
+                    rand_index = np.random.randint(0, num_agents)
+                    rand_leader_pos = positions[rand_index]
+                    D = abs(C * rand_leader_pos - positions[i, :])
+                    positions[i, :] = rand_leader_pos - A * D
+            else:
+                D = abs(leader_pos - positions[i, :])
+                positions[i, :] = D * np.exp(b * l) * np.cos(2 * np.pi * l) + leader_pos
+
+        convergence_curve.append(leader_score)
+
+    run_time = time.time() - start_time
+    return leader_pos, leader_score, run_time
+
+def hho_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    lb, ub = zip(*bounds)
+    lb, ub = np.array(lb), np.array(ub)
+    positions = np.random.uniform(low=lb, high=ub, size=(num_agents, dim))
+    leader_pos = np.zeros(dim)
+    leader_score = float('inf')
+    convergence_curve = []
+
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < leader_score:
+                leader_score = fitness
+                leader_pos = positions[i, :].copy()
+
+        E1 = 2 * (1 - iter / max_iter)
+        for i in range(num_agents):
+            E0 = 2 * np.random.random() - 1
+            Escaping_Energy = E1 * E0
+
+            if abs(Escaping_Energy) >= 1:
+                q = np.random.random()
+                if q >= 0.5:
+                    rand_index = np.random.randint(0, num_agents)
+                    rand_pos = positions[rand_index]
+                    positions[i] = rand_pos - np.random.random() * abs(rand_pos - 2 * np.random.random() * positions[i])
+                else:
+                    positions[i] = (leader_pos - positions.mean(0)) - np.random.random() * (
+                        (ub - lb) * np.random.random() + lb)
+
+            else:
+                r = np.random.random()
+                if r >= 0.5 and abs(Escaping_Energy) < 0.5:
+                    positions[i] = leader_pos - Escaping_Energy * abs(leader_pos - positions[i])
+                if r >= 0.5 and abs(Escaping_Energy) >= 0.5:
+                    positions[i] = positions.mean(0) - Escaping_Energy * abs(positions.mean(0) - positions[i])
+                if r < 0.5 and abs(Escaping_Energy) >= 0.5:
+                    positions[i] = leader_pos - Escaping_Energy * abs(
+                        leader_pos - positions[i]) - np.random.random() * (
+                        (ub - lb) * np.random.random() + lb)
+                if r < 0.5 and abs(Escaping_Energy) < 0.5:
+                    positions[i] = leader_pos - Escaping_Energy * abs(leader_pos - positions[i])
+
+        convergence_curve.append(leader_score)
+
+    run_time = time.time() - start_time
+    return leader_pos, leader_score, run_time
+
+def geo_algorithm(obj_function, bounds, num_agents=5, max_iter=50):
+    dim = len(bounds)
+    lb, ub = zip(*bounds)
+    lb, ub = np.array(lb), np.array(ub)
+    leader_pos = np.zeros(dim)
+    leader_score = float('inf')
+
+    positions = np.random.uniform(low=lb, high=ub, size=(num_agents, dim))
+    start_time = time.time()
+    for iter in range(max_iter):
+        for i in range(num_agents):
+            fitness = obj_function(positions[i, :])[0]
+            if fitness < leader_score:
+                leader_score = fitness
+                leader_pos = positions[i, :].copy()
+
+        F = 2 * np.exp(-(4 * iter / max_iter) ** 2) * np.sin((2 * np.pi * iter) / max_iter)
+        for i in range(num_agents):
+            r1 = np.random.random()
+            P = np.random.random()
+            G = (r1 * leader_pos - positions[i])
+            if P < 0.5:
+                positions[i] = leader_pos - G * F
+            else:
+                positions[i] = leader_pos + G * F
+
+    run_time = time.time() - start_time
+    return leader_pos, leader_score, run_time
+
+# Benchmark names and functions
+benchmark_names = ["Sphere", "Ackley", "Rastrigin", "Rosenbrock", "Schwefel", "Griewank"]
+benchmark_functions = [sphere_function, ackley_function, rastrigin_function, rosenbrock_function, schwefel_function, griewank_function]
+optimization_names = ["GA", "GWO", "WOA", "HHO", "GEO"]
+optimization_algorithms = [ga_algorithm, gwo_algorithm, woa_algorithm, hho_algorithm, geo_algorithm]
+
+# Main optimization loop and data collection
+results = {benchmark_name: {opt_name: {} for opt_name in optimization_names} for benchmark_name in benchmark_names}
+
+num_runs = 5  # Number of runs to calculate mean and std
+
+for benchmark_name, benchmark_func in zip(benchmark_names, benchmark_functions):
+    for opt_name, opt_func in zip(optimization_names, optimization_algorithms):
+        best_scores = []
+        run_times = []
+        for _ in range(num_runs):
+            best_params, best_score, run_time = opt_func(lambda params: objective_function(params, benchmark_func), bounds)
+            best_scores.append(best_score)
+            run_times.append(run_time)
+        results[benchmark_name][opt_name] = {
+            'Best': np.min(best_scores),
+            'Mean': np.mean(best_scores),
+            'Std': np.std(best_scores),
+            'Run Time': np.mean(run_times)
+        }
+        print(f"Best params for {benchmark_name} using {opt_name}: {best_params}, Best Score: {np.min(best_scores)}, Mean Score: {np.mean(best_scores)}, Std: {np.std(best_scores)}, Run Time: {np.mean(run_times)}")
+
+# Create a Word document
+doc = Document()
+
+# Add a title
+doc.add_heading('Optimization Results', 0)
+
+# Add tables to the Word document
+for benchmark_name in benchmark_names:
+    doc.add_heading(f'Table for {benchmark_name} Function', level=1)
+    table = doc.add_table(rows=1, cols=5)
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'Algorithm'
+    hdr_cells[1].text = 'Best'
+    hdr_cells[2].text = 'Mean'
+    hdr_cells[3].text = 'Std'
+    hdr_cells[4].text = 'Run Time (Sec)'
+
+    for opt_name in optimization_names:
+        result = results[benchmark_name][opt_name]
+        row_cells = table.add_row().cells
+        row_cells[0].text = opt_name
+        row_cells[1].text = f"{result['Best']:.6f}"
+        row_cells[2].text = f"{result['Mean']:.6f}"
+        row_cells[3].text = f"{result['Std']:.6f}"
+        row_cells[4].text = f"{result['Run Time']:.6f}"
+
+# Save the Word document
+doc.save('Optimization_Results.docx')
+
+# Print tables
+for benchmark_name in benchmark_names:
+    print(f"\nTable for {benchmark_name} Function")
+    print("Algorithm\tBest\tMean\tStd\tRun Time (Sec)")
+    for opt_name in optimization_names:
+        result = results[benchmark_name][opt_name]
+        print(f"{opt_name}\t{result['Best']:.6f}\t{result['Mean']:.6f}\t{result['Std']:.6f}\t{result['Run Time']:.6f}")
+
+# Optionally, plot results here
+for benchmark_name in benchmark_names:
+    plt.figure()
+    plt.title(f'Response curves for {benchmark_name}')
+    for opt_name in optimization_names:
+        best_params = results[benchmark_name][opt_name]['Best']
+        PIDA = ctrl.TransferFunction([best_params[0], best_params[1], best_params[2], best_params[3]], [1, best_params[4], best_params[5], 0])
+        Amplifier = ctrl.TransferFunction([10], [0.1, 1])
+        Exciter = ctrl.TransferFunction([1], [0.4, 1])
+        Generator = ctrl.TransferFunction([1], [1, 1])
+        Sensor = ctrl.TransferFunction([1], [0.01, 1])
+        OpenLoop = PIDA * Amplifier * Exciter * Generator
+        ClosedLoop = ctrl.feedback(OpenLoop, Sensor)
+        time = np.linspace(0, 10, 1000)
+        _, response = ctrl.step_response(ClosedLoop, T=time)
+        plt.plot(time, response, label=f"{opt_name}")
+    plt.xlabel('Time (s)')
+    plt.ylabel('Response')
+    plt.legend()
+    plt.grid(True)
     plt.show()
