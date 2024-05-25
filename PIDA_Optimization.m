@@ -368,3 +368,4 @@ function [best_position, best_score, convergence_curve] = geo_algorithm(obj_func
     best_position = best_position;
     best_score = best_score;
 end
+ 
